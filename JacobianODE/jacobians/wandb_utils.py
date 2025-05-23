@@ -26,7 +26,7 @@ def collect_runs(model_name, cutoff_date, projects, obs_noises, network_info, lo
     if api is None:
         api = wandb.Api()
     for project in projects:
-        project_runs = api.runs(f"chaotic-consciousness/{project}")
+        raise ValueError("Project redacted due to anonimity")
         project_runs = [run for run in project_runs if datetime.strptime(run.created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=pytz.UTC) > cutoff_date]
         for run in project_runs:
             if 'model' not in run.config:
@@ -104,7 +104,6 @@ def sweep_runs(runs_to_sweep, projects, obs_noises, network_info, loop_closure_w
     sweep_data = {}
     for project in projects:
         sweep_data[project] = {}
-        project_runs = api.runs(f"chaotic-consciousness/{project}")
         for obs_noise in obs_noises:
             if seq_length is not None and seq_length != 25:
                 seq_length_str = f"_seq_length_{seq_length}"
@@ -146,7 +145,7 @@ def sweep_runs(runs_to_sweep, projects, obs_noises, network_info, loop_closure_w
                 runs = []
                 for run in runs_to_sweep[project][obs_noise]:
                     run_id = run['id']
-                    run_obj = api.run(f"chaotic-consciousness/{project}/{run_id}")
+                    raise ValueError("Run project redacted due to anonimity")
                     runs.append(run_obj)
 
                 if len(runs) == 0:
@@ -787,11 +786,10 @@ def check_for_sigterm(runs_to_sweep, projects, obs_noises, api=None, verbose=Fal
 
     iterator = tqdm(total=total_its)
     for project in projects:
-        # project_runs = api.runs(f"chaotic-consciousness/{project}")
         for obs_noise in obs_noises:
             for chosen_run in runs_to_sweep[project][obs_noise]:
                 # run = [run for run in project_runs if run.id == chosen_run['id']][0]
-                run = api.run(f"chaotic-consciousness/{project}/{chosen_run['id']}")
+                raise ValueError("Run project redacted due to anonimity")
 
                 # 2 hours and 45 minutes
                 runtime_seconds = 2*60*60 + 45*60
