@@ -180,178 +180,6 @@ def loop_closure(batch, jac_func, dt=1, n_loops=None, n_loop_pts=None, loop_path
     else:
         return loop_int
 
-def get_jac_reg_terms(batch, jac_func, dt, deriv_func=None, int_method='Trapezoid',
-                     N=10, randomize=False):
-    """Compute various regularization terms for Jacobian-based training.
-
-    This function computes several regularization terms used in training:
-    - Base integration: Integration from initial point to each point
-    - Sequential integration: Integration between consecutive points
-    - Path consistency: Difference between direct and sequential integration
-    - Loop closure: Sum of sequential integrations around loops
-
-    Args:
-        batch (torch.Tensor): Input batch of trajectories
-        jac_func (Callable): Function to compute Jacobian matrices
-        dt (float): Time step size
-        deriv_func (Optional[Callable]): Function to compute true derivatives (default: None)
-        int_method (str): Integration method (default: 'Trapezoid')
-        N (int): Number of integration points (default: 10)
-        randomize (bool): Whether to randomize batch and time dimensions (default: False)
-
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            - Base integration values
-            - Sequential integration values
-            - Path consistency values
-            - Loop closure values
-    """
-    f_diff_jac_base = torch.zeros_like(batch)
-    f_diff_jac_seq = torch.zeros_like(batch)
-    if deriv_func is not None:
-        f_diff_deriv_base = torch.zeros_like(batch)
-        f_diff_deriv_seq = torch.zeros_like(batch)
-
-    if randomize:
-        batch_size, time_steps, dims = batch.shape
-
-        # Randomize the batch dimension
-        batch_indices = torch.randperm(batch_size)
-        batch = batch[batch_indices]
-
-        # Randomize the time dimension
-        time_indices = torch.randperm(time_steps)
-        batch = batch[:, time_indices, :]
-
-    s_0 = torch.tensor(0*dt).type(batch.dtype).to(batch.device)
-    x_s_0 = batch[..., 0, :]
-
-    loop = torch.cat((batch, x_s_0.unsqueeze(-2)), dim=-2)
-
-    deriv_vals = deriv_func(torch.arange(loop.shape[-2]).type(batch.dtype).to(batch.device)*dt, loop)
-
-    jacobian_ode = JacobianODE(batch, jac_func, dt=dt, int_method=int_method, fit_spline=False)
-    for t_idx in range(1, loop.shape[-2]):
-        s = (torch.tensor(t_idx-1)*dt).type(batch.dtype).to(batch.device)
-        t = (torch.tensor(t_idx)*dt).type(batch.dtype).to(batch.device)
-        x_s = loop[..., t_idx - 1, :]
-        x_t = loop[..., t_idx, :]
-
-        f_diff_jac_base[..., t_idx - 1, :] = jacobian_ode.H(s_0, t, x_s_0, x_t, inner_path="line", N=N)
-        f_diff_jac_seq[..., t_idx - 1, :] = jacobian_ode.H(s, t, x_s, x_t, inner_path="line", N=N)
-
-        if deriv_func is not None:
-            f_diff_deriv_base[..., t_idx - 1, :] = deriv_vals[..., t_idx, :] - deriv_vals[..., 0, :]
-            f_diff_deriv_seq[..., t_idx -1, :] = deriv_vals[..., t_idx, :] - deriv_vals[..., t_idx - 1, :]
-
-    base_integration_vals = f_diff_jac_base - f_diff_deriv_base
-    seq_integration_vals = f_diff_jac_seq - f_diff_deriv_seq
-    path_consistency_vals = f_diff_jac_base - torch.cumsum(f_diff_jac_seq, dim=-2)
-    loop_closure_vals = f_diff_jac_seq.sum(axis=-2)
-
-    return base_integration_vals, seq_integration_vals, path_consistency_vals, loop_closure_vals
-
-def compute_neuralode_jacobians(neuralode, batch, t=0, batch_idx=0, dataloader_idx=0):
-    """Compute Jacobian matrices for a NeuralODE model.
-
-    This function computes the Jacobian matrices of the neural network's output
-    with respect to its input using forward-mode automatic differentiation.
-
-    Args:
-        neuralode (NeuralODE): The NeuralODE model
-        batch (torch.Tensor): Input batch of shape (..., T, D) or (..., D)
-        t (int): Time step (unused, kept for interface consistency)
-        batch_idx (int): Batch index (unused, kept for interface consistency)
-        dataloader_idx (int): Dataloader index (unused, kept for interface consistency)
-
-    Returns:
-        torch.Tensor: Jacobian matrices of shape (..., T, D, D) or (..., D, D)
-    """
-    reshape = False
-    if len(batch.shape) > 3:
-        reshape = True
-        batches = batch.shape[:-2]
-        batch = batch.reshape(-1, batch.shape[-2], batch.shape[-1])
-    # jacs = torch.func.vmap(torch.func.jacrev(lambda x: self.model.net(x)))(batch)
-    jacs = torch.func.vmap(torch.func.jacfwd(lambda x: neuralode.net(x)))(batch)
-    if len(jacs.shape) >= 4:
-        jacs = jacs.transpose(-3, -2)
-        modified_jacs = jacs.clone()
-        modified_jacs = modified_jacs[..., torch.arange(jacs.shape[-4]), torch.arange(jacs.shape[-3]), :, :]
-    else:
-        modified_jacs = jacs
-    if reshape:
-        modified_jacs = modified_jacs.reshape(*batches, -1, modified_jacs.shape[-2], modified_jacs.shape[-1])
-    return modified_jacs
-
-def hessian_loss(traj, model):
-    """Compute a loss based on the symmetry of Hessian matrices.
-
-    This function computes a loss that penalizes asymmetry in the Hessian matrices
-    of the model's output with respect to its input. This helps ensure the model
-    learns a conservative vector field.
-
-    Args:
-        traj (torch.Tensor): Input trajectories
-        model (nn.Module): Neural network model
-
-    Returns:
-        torch.Tensor: Mean norm of asymmetric part of Hessians
-    """
-    hessians = torch.func.vmap(torch.func.jacfwd(lambda x: model(x)))(traj.reshape(-1, traj.shape[-1])).reshape(traj.shape[0], traj.shape[1], traj.shape[-1], traj.shape[-1], traj.shape[-1])
-    hess_loss = torch.mean(torch.linalg.norm(hessians - hessians.transpose(-2, -1), dim=(-2, -1)))
-    return hess_loss
-
-def path_consistency_loss(batch, jac_func, dt, int_method='Trapezoid', N=20, pivot_ind=None):
-    """Compute path consistency loss for validating integration.
-
-    This function computes the difference between direct integration and
-    sequential integration along paths, which should be zero for path-independent
-    systems.
-
-    Args:
-        batch (torch.Tensor): Input batch of trajectories
-        jac_func (Callable): Function to compute Jacobian matrices
-        dt (float): Time step size
-        int_method (str): Integration method (default: 'Trapezoid')
-        N (int): Number of integration points (default: 20)
-        pivot_ind (Optional[int]): Index to use as pivot point (default: None)
-                                 If None, uses consecutive triplets
-
-    Returns:
-        torch.Tensor: Path consistency errors
-    """
-    jacobian_ode = JacobianODE(batch, jac_func, dt=dt, int_method=int_method, fit_spline=False)
-    if pivot_ind is None:
-        path_consistency_ret = torch.zeros_like(batch[..., 2:, :])
-        range_vals = torch.arange(2, batch.shape[-2])
-    else:
-        path_consistency_ret = torch.zeros_like(batch[..., pivot_ind + 1:, :])
-        range_vals = torch.arange(pivot_ind + 1, batch.shape[-2])
-    for t_idx in range_vals:
-        if pivot_ind is not None:
-            r = torch.tensor(0*dt).type(batch.dtype).to(batch.device)
-            x_r = batch[..., 0, :]
-            s = torch.tensor(pivot_ind*dt).type(batch.dtype).to(batch.device)
-            x_s = batch[..., pivot_ind, :]
-        else:
-            r = (torch.tensor(t_idx-2)*dt).type(batch.dtype).to(batch.device)
-            x_r = batch[..., t_idx - 2, :]
-            s = (torch.tensor(t_idx-1)*dt).type(batch.dtype).to(batch.device)
-            x_s = batch[..., t_idx - 1, :]
-        t = (torch.tensor(t_idx)*dt).type(batch.dtype).to(batch.device)
-        x_t = batch[..., t_idx, :]
-        jac_rs = jacobian_ode.H(r, s, x_r, x_s, inner_path="line", N=N)
-        jac_st = jacobian_ode.H(s, t, x_s, x_t, inner_path="line", N=N)
-        jac_rt = jacobian_ode.H(r, t, x_r, x_t, inner_path="line", N=N)
-        
-        if pivot_ind is None:
-            path_consistency_ret[..., t_idx - 2, :] = jac_rs + jac_st - jac_rt
-        else:
-            path_consistency_ret[..., t_idx - pivot_ind - 1, :] = jac_rs + jac_st - jac_rt
-    return path_consistency_ret
-
-
 class LitBase(L.LightningModule):
     """Base Lightning module for training neural networks on dynamical systems.
 
@@ -361,7 +189,6 @@ class LitBase(L.LightningModule):
 
     Args:
         model (nn.Module): The neural network model to train
-        deriv_model (Optional[nn.Module]): Optional model for computing derivatives
         dt (float): Time step size for integration (default: 1)
         eq (Optional[Any]): Optional equation object containing true dynamics
         direct (bool): Whether to use direct prediction or integration (default: True)
@@ -388,8 +215,6 @@ class LitBase(L.LightningModule):
         traj_init_steps_validation (Optional[int]): Initial steps for validation trajectories (default: None)
         inner_N_validation (Optional[int]): Number of integration steps for validation (default: None)
         data_type (Optional[str]): Type of data being used (default: None)
-        lles_max_T (int): Maximum time for computing Lyapunov exponents (default: 10)
-        lles_n_neighbors (int): Number of neighbors for Lyapunov exponent computation (default: 3)
         optimizer (str): Optimizer to use ('AdamW' or 'Adam') (default: 'AdamW')
         optimizer_kwargs (dict): Keyword arguments for optimizer (default: {'lr': 1e-4})
         gradient_clip_val (float): Value for gradient clipping (default: 1.0)
@@ -412,40 +237,21 @@ class LitBase(L.LightningModule):
         loop_path (str): Path type for loop closure ('line' or 'spline') (default: 'line')
         loop_closure_weight (float): Weight for loop closure loss (default: 1.0)
         final_loop_closure_weight (Optional[float]): Final weight for loop closure loss (default: None)
-        min_loop_closure_loss (float): Minimum loop closure loss (default: 0.0)
         obs_noise_scale_loop (Optional[float]): Observation noise scale for loop closure (default: None)
         trajectory_training (bool): Whether to use trajectory training (default: True)
-        random_walk_training (bool): Whether to use random walk training (default: False)
-        random_walk_weight (float): Weight for random walk loss (default: 0.0)
-        min_random_walk_steps (int): Minimum steps for random walk (default: 1)
-        max_random_walk_steps (Optional[int]): Maximum steps for random walk (default: None)
-        rescaling_sigma (float): Sigma for rescaling (default: 1)
-        deriv_trajectory_weight (float): Weight for derivative trajectory loss (default: 1)
-        final_deriv_trajectory_weight (Optional[float]): Final weight for derivative trajectory loss (default: None)
-        base_integration_weight (float): Weight for base integration loss (default: 1)
-        final_base_integration_weight (Optional[float]): Final weight for base integration loss (default: None)
-        seq_integration_weight (float): Weight for sequential integration loss (default: 1)
-        final_seq_integration_weight (Optional[float]): Final weight for sequential integration loss (default: None)
-        path_consistency_weight (float): Weight for path consistency loss (default: 1)
-        final_path_consistency_weight (Optional[float]): Final weight for path consistency loss (default: None)
-        node_jacobians_weight (float): Weight for NeuralODE Jacobian loss (default: 0)
         use_base_deriv_pt (bool): Whether to use base derivative point (default: False)
         base_pt_init (Optional[torch.Tensor]): Initial base point (default: None)
         base_deriv_pt_init (Optional[torch.Tensor]): Initial base derivative point (default: None)
-        hessian_weight (float): Weight for Hessian loss (default: 0)
         n_delays (Optional[int]): Number of delays for embedding (default: None)
         obs_dim (Optional[int]): Dimension of observations (default: None)
         obs_only_loss (bool): Whether to use observation-only loss (default: False)
         early_stopping_patience (int): Patience for early stopping (default: 5)
         early_stopping_mode (str): Mode for early stopping ('min' or 'max') (default: 'min')
         percent_thresh (float): Threshold for percent improvement (default: 0.01)
-        mu (float): Mean for noise (default: 0)
-        sigma (float): Standard deviation for noise (default: 1)
     """
     def __init__(
                     self, 
                     model,
-                    deriv_model=None,
                     dt=1,
                     eq=None,
                     direct=True,
@@ -472,15 +278,11 @@ class LitBase(L.LightningModule):
                     traj_init_steps_validation=None,
                     inner_N_validation=None,
                     data_type=None,
-                    lles_max_T=10,
-                    lles_n_neighbors=3,
                     optimizer='AdamW',
                     optimizer_kwargs={'lr': 1e-4},
                     gradient_clip_val=1.0,
                     gradient_clip_algorithm='norm',
                     jacobianODEint_kwargs={},
-                    min_traj_init_steps=2,
-                    max_traj_init_steps=None,
                     use_scheduler=False,
                     min_lr=None,
                     k_scale=None,
@@ -496,27 +298,11 @@ class LitBase(L.LightningModule):
                     loop_path='line',
                     loop_closure_weight=1.0,
                     final_loop_closure_weight=None,
-                    min_loop_closure_loss=0.0,
                     obs_noise_scale_loop=None,
                     trajectory_training=True,
-                    random_walk_training=False,
-                    random_walk_weight=0.0,
-                    min_random_walk_steps=1,
-                    max_random_walk_steps=None,
-                    rescaling_sigma=1,
-                    deriv_trajectory_weight=1,
-                    final_deriv_trajectory_weight=None,
-                    base_integration_weight=1,
-                    final_base_integration_weight=None,
-                    seq_integration_weight=1,
-                    final_seq_integration_weight=None,
-                    path_consistency_weight=1,
-                    final_path_consistency_weight=None,
-                    node_jacobians_weight=0,
                     use_base_deriv_pt=False,
                     base_pt_init=None,
                     base_deriv_pt_init=None,
-                    hessian_weight=0,
                     n_delays=None,
                     obs_dim=None,
                     obs_only_loss=False,
@@ -529,7 +315,6 @@ class LitBase(L.LightningModule):
         super().__init__()
         # self.save_hyperparameters(ignore=['model'])
         self.model = model
-        self.deriv_model = deriv_model
         self.dt = dt
         self.eq = eq
         self.direct = direct
@@ -578,10 +363,6 @@ class LitBase(L.LightningModule):
 
         self.data_type = data_type
 
-        
-        self.lles_max_T = lles_max_T
-        self.lles_n_neighbors = lles_n_neighbors
-
         self.optimizer = optimizer
         self.optimizer_kwargs = optimizer_kwargs
 
@@ -605,44 +386,14 @@ class LitBase(L.LightningModule):
         self.loop_path = loop_path
         self.loop_closure_weight = loop_closure_weight
         self.final_loop_closure_weight = final_loop_closure_weight
-        self.min_loop_closure_loss = min_loop_closure_loss
         if final_loop_closure_weight is None:
             self.final_loop_closure_weight = loop_closure_weight
         else:
             self.final_loop_closure_weight = final_loop_closure_weight
         self.obs_noise_scale_loop = obs_noise_scale_loop
         self.mix_trajectories = mix_trajectories
-        self.min_traj_init_steps = min_traj_init_steps
-        if max_traj_init_steps is None:
-            self.max_traj_init_steps = self.min_traj_init_steps
-        else:
-            self.max_traj_init_steps = max_traj_init_steps
         self.trajectory_training = trajectory_training
-        self.random_walk_training = random_walk_training
-        self.random_walk_weight = random_walk_weight
-        self.min_random_walk_steps = min_random_walk_steps
-        if max_random_walk_steps is None:
-            self.max_random_walk_steps = self.min_random_walk_steps
-        else:
-            self.max_random_walk_steps = max_random_walk_steps
-        self.deriv_trajectory_weight = deriv_trajectory_weight
-        self.rescaling_sigma = rescaling_sigma
-        self.base_integration_weight = base_integration_weight
-        if final_base_integration_weight is None:
-            self.final_base_integration_weight = base_integration_weight
-        else:
-            self.final_base_integration_weight = final_base_integration_weight
-        self.seq_integration_weight = seq_integration_weight
-        if final_seq_integration_weight is None:
-            self.final_seq_integration_weight = seq_integration_weight
-        else:
-            self.final_seq_integration_weight = final_seq_integration_weight
-        self.path_consistency_weight = path_consistency_weight
-        if final_path_consistency_weight is None:
-            self.final_path_consistency_weight = path_consistency_weight
-        else:
-            self.final_path_consistency_weight = final_path_consistency_weight
-        self.node_jacobians_weight = node_jacobians_weight
+
         # self.train_dataloader_names = []
         # self.val_dataloader_names = []
         
@@ -665,8 +416,6 @@ class LitBase(L.LightningModule):
             self.base_pt = None
             self.base_deriv_pt = None
             self.base_deriv_func = None
-        
-        self.hessian_weight = hessian_weight
         self.l1_penalty = l1_penalty
 
         self.n_delays = n_delays
@@ -729,7 +478,6 @@ class LitBase(L.LightningModule):
                     alpha_teacher_forcing=None,
                     teacher_forcing_steps=None,
                     jacobianODEint_kwargs=None,
-                    rand_init_traj_steps=True,
                     criterion=None,
                     verbose=False,
                 ):
@@ -746,7 +494,6 @@ class LitBase(L.LightningModule):
             alpha_teacher_forcing (Optional[float]): Teacher forcing coefficient
             teacher_forcing_steps (Optional[int]): Number of teacher forcing steps
             jacobianODEint_kwargs (Optional[dict]): Integration parameters
-            rand_init_traj_steps (bool): Whether to randomize initial steps
             criterion (Optional[Callable]): Custom loss function
             verbose (bool): Whether to print progress
 
@@ -780,25 +527,14 @@ class LitBase(L.LightningModule):
         batch = batch + (torch.randn(*batch.shape)*obs_noise_scale).type(batch.dtype).to(batch.device)
 
         # sample traj_init_steps as an integer between min_traj_init_steps and max_traj_init_steps inclusive
-        if rand_init_traj_steps:
-            traj_init_steps = np.random.randint(self.min_traj_init_steps, self.max_traj_init_steps + 1)
-            jacobianODEint_kwargs['traj_init_steps'] = traj_init_steps
-        else:
-            if 'traj_init_steps' not in jacobianODEint_kwargs:
-                jacobianODEint_kwargs['traj_init_steps'] = 2
+        if 'traj_init_steps' not in jacobianODEint_kwargs:
+            jacobianODEint_kwargs['traj_init_steps'] = 2
         
         if self.y0_noise_scale > 0:
             batch[..., :jacobianODEint_kwargs['traj_init_steps'], :] = batch[..., :jacobianODEint_kwargs['traj_init_steps'], :] + (torch.randn(*batch[..., :jacobianODEint_kwargs['traj_init_steps'], :].shape)*self.y0_noise_scale).type(batch.dtype).to(batch.device)
 
-        if 'inner_path' in jacobianODEint_kwargs:
-            if jacobianODEint_kwargs['inner_path'] == 'random_walk':
-                n_random_walk_steps = np.random.randint(self.min_random_walk_steps, self.max_random_walk_steps + 1)
-                jacobianODEint_kwargs['n_random_walk_steps'] = n_random_walk_steps
-
         if direct:
-            if self.deriv_model is not None:
-                deriv_func = self.deriv_model
-            elif self.use_base_deriv_pt:
+            if self.use_base_deriv_pt:
                 batch = torch.cat([self.base_pt.repeat(batch.shape[0], 1, 1), batch], dim=1)
                 deriv_func = self.base_deriv_func
                 jacobianODEint_kwargs['traj_init_steps'] = 2
@@ -823,10 +559,7 @@ class LitBase(L.LightningModule):
                 outputs = outputs[:, 1:, :]
         else:
             outputs = torch.zeros(batch.shape).to(batch.device)
-            if self.deriv_model is not None:
-                model = self.deriv_model
-            else:
-                model = self.model
+            model = self.model
             if any(model_type in model.__class__.__name__ for model_type in ['NeuralODE', 'Transformer', 'MLP']):
                 outputs = model.generate(batch, alpha=alpha_teacher_forcing)
             else:
@@ -932,17 +665,7 @@ class LitBase(L.LightningModule):
         )
 
         return {'loss': loop_loss, 'metric_vals': metric_vals, 'outputs': loop_int}
-    
-    # def shortcuts_model_step(
-    #         self,
-    #         batch,
-    #         batch_idx=0,
-    #         dataloader_idx=0,
-    #         obs_noise_scale=None,
-    #         noise_annealing=None,
-            
-    #     )
-        
+
     def update_alpha_teacher_forcing(self, jacs_pred, batch_idx):
         """Update the teacher forcing coefficient based on training progress.
 
@@ -975,7 +698,6 @@ class LitBase(L.LightningModule):
             jacs_pred = self.compute_jacobians(batch)
         return jacs_pred
 
-
     def get_true_jacs(self, batch):
         """Get true Jacobians for a batch.
 
@@ -1001,7 +723,7 @@ class LitBase(L.LightningModule):
         Returns:
             torch.Tensor: Training loss
         """
-        if 'NeuralODE' in self.model.__class__.__name__ and not self.teacher_forcing_annealing:
+        if 'NeuralODE' in self.model.__class__.__name__ and not self.teacher_forcing_annealing and self.jac_penalty == 0:
             jacs_pred = None
         else:
             jacs_pred = self.get_pred_jacs(batch)
@@ -1014,49 +736,14 @@ class LitBase(L.LightningModule):
         train_rets = {}
         if self.trajectory_training:
             train_rets['trajectory'] = self.trajectory_model_step(batch, batch_idx, dataloader_idx)
-        if self.deriv_model is not None and not (not self.direct and 'NeuralODE' in self.deriv_model.__class__.__name__):
-            train_rets['deriv_trajectory'] = self.trajectory_model_step(batch, batch_idx, dataloader_idx, direct=False)
         if self.loop_closure_training:
             if ('NeuralODE' in self.model.__class__.__name__ and self.loop_closure_weight > 0) or ('NeuralODE' not in self.model.__class__.__name__):
                 train_rets['loop_closure'] = self.loop_closure_model_step(batch, batch_idx, dataloader_idx)
-                if self.min_loop_closure_loss > 0:
-                    train_rets['loop_closure']['loss'] = torch.maximum(train_rets['loop_closure']['loss'], torch.tensor(self.min_loop_closure_loss)) - self.min_loop_closure_loss
-        if self.path_consistency_weight > 0:
-            path_consistency_ret = path_consistency_loss(batch, self.compute_jacobians, dt=self.dt, int_method=self.loop_closure_int_method, N=self.jacobianODEint_kwargs['inner_N'], pivot_ind=self.min_traj_init_steps)
-            train_rets['path_consistency'] = {'loss': torch.mean(path_consistency_ret**2), 'metric_vals': {}}
-
-        if self.hessian_weight > 0:
-            train_rets['hessian'] = {'loss': hessian_loss(batch, self.model), 'metric_vals': {}}
-        if self.random_walk_training:
-            jacobianODEint_kwargs = self.jacobianODEint_kwargs.copy()
-            jacobianODEint_kwargs['inner_path'] = 'random_walk'
-            train_rets['random_walk'] = self.trajectory_model_step(batch, batch_idx, dataloader_idx, jacobianODEint_kwargs=jacobianODEint_kwargs)
-
-        
-        if self.deriv_model is not None and 'NeuralODE' not in self.model.__class__.__name__:
-            base_integration_vals, seq_integration_vals, path_consistency_vals, loop_closure_vals = get_jac_reg_terms(batch, self.compute_jacobians, dt=self.dt, deriv_func=self.deriv_model, int_method=self.loop_closure_int_method, N=self.jacobianODEint_kwargs['inner_N'], randomize=True)
-            # base_integration_vals, seq_integration_vals, path_consistency_vals, loop_closure_vals = get_jac_reg_terms(batch, self.compute_jacobians, dt=self.dt, deriv_func=lambda _t, _x: self.eq.rhs(_x, _t), int_method=self.loop_closure_int_method, N=self.jacobianODEint_kwargs['inner_N'], randomize=True)
-            train_rets['base_integration'] = {'loss': torch.mean(base_integration_vals**2), 'metric_vals': {}}
-            train_rets['seq_integration'] = {'loss': torch.mean(seq_integration_vals**2), 'metric_vals': {}}
-            train_rets['path_consistency'] = {'loss': torch.mean(path_consistency_vals**2), 'metric_vals': {}}
-            train_rets['loop_closure'] = {'loss': torch.mean(loop_closure_vals**2), 'metric_vals': {}}
-            if self.min_loop_closure_loss > 0:
-                train_rets['loop_closure']['loss'] = torch.maximum(train_rets['loop_closure']['loss'], torch.tensor(self.min_loop_closure_loss)) - self.min_loop_closure_loss
-
-        if self.deriv_model is not None and 'NeuralODE' in self.deriv_model.__class__.__name__ and self.node_jacobians_weight > 0:
-            node_jacs_pred = compute_neuralode_jacobians(self.deriv_model, batch)
-            train_rets['node_jacobians'] = {'loss': torch.mean((node_jacs_pred - jacs_pred)**2), 'metric_vals': {}}
-
-        if 'NeuralODE' in self.model.__class__.__name__:
-            train_rets['trajectory_indirect'] = self.trajectory_model_step(batch, batch_idx, dataloader_idx, direct=False)
 
         total_loss = 0
         alpha = (self.alpha_teacher_forcing - self.min_alpha_teacher_forcing)/(1 - self.min_alpha_teacher_forcing)
         trajectory_weight = 1
         loop_closure_weight = (1 - alpha)*self.final_loop_closure_weight + alpha*self.loop_closure_weight
-        random_walk_weight = self.random_walk_weight
-        deriv_trajectory_weight = self.deriv_trajectory_weight
-        hessian_weight = self.hessian_weight
        
         for pred_type, ret_dict in train_rets.items():
             if torch.isnan(ret_dict['loss']):
@@ -1066,23 +753,10 @@ class LitBase(L.LightningModule):
             loss_weight = 1
             if 'trajectory' in pred_type:
                 loss_weight *= trajectory_weight
-            if 'deriv_trajectory' in pred_type:
-                loss_weight *= deriv_trajectory_weight
             if 'loop_closure' in pred_type:
                 # loss_weight *= loop_closure_weight * (1/self.n_loop_pts)
                 loss_weight *= loop_closure_weight
-            if 'random_walk' in pred_type:
-                loss_weight *= random_walk_weight
-            if 'base_integration' in pred_type:
-                loss_weight *= self.base_integration_weight
-            if 'seq_integration' in pred_type:
-                loss_weight *= self.seq_integration_weight
-            if 'path_consistency' in pred_type:
-                loss_weight *= self.path_consistency_weight
-            if 'node_jacobians' in pred_type:
-                loss_weight *= self.node_jacobians_weight
-            if 'hessian' in pred_type:
-                loss_weight *= hessian_weight
+            
             total_loss += loss_weight*loss_val
         if jac_norm is not None:
             total_loss += self.jac_penalty*jac_norm
@@ -1099,7 +773,7 @@ class LitBase(L.LightningModule):
                 batch=batch,
                 jacs_pred=jacs_pred,
                 batch_idx=batch_idx,
-                on_step=True,
+                on_step=False,
                 on_epoch=True,
                 sync_dist=True,
                 prog_bar=True
@@ -1164,32 +838,15 @@ class LitBase(L.LightningModule):
             'criterion': self.criterion_validation,
             'noise_annealing': False,
             'jacobianODEint_kwargs': jacobianODEint_kwargs,
-            'rand_init_traj_steps': False,
         }
 
         val_rets = {}
         val_rets['trajectory'] = self.trajectory_model_step(batch, batch_idx, dataloader_idx, **model_step_kwargs)
-        if self.path_consistency_weight > 0:
-            if 'NeuralODE' not in self.model.__class__.__name__:
-                path_consistency_ret = path_consistency_loss(batch, self.compute_jacobians, dt=self.dt, int_method=self.loop_closure_int_method, N=self.jacobianODEint_kwargs['inner_N'], pivot_ind=self.min_traj_init_steps)
-                val_loop_closure = {'loss': torch.mean(path_consistency_ret**2), 'metric_vals': {}}
-                n_loop_pts = 3
-                loop_error_est = None
-            else:
-                val_loop_closure = None
-                n_loop_pts = None
-                loop_error_est = None
-        else:
-            if 'NeuralODE' not in self.model.__class__.__name__:
-                val_loop_closure = self.loop_closure_model_step(batch, batch_idx, dataloader_idx)
-            else:
-                val_loop_closure = None
-                # n_loop_pts = None
-                # loop_error_est  = None
 
-            # val_loop_closure = self.loop_closure_model_step(batch, batch_idx, dataloader_idx)
-            loop_error_est = None
-            n_loop_pts = None
+        if 'NeuralODE' not in self.model.__class__.__name__:
+            val_loop_closure = self.loop_closure_model_step(batch, batch_idx, dataloader_idx)
+        else:
+            val_loop_closure = None
 
         if log_metrics:
             self.log_validation_metrics(
@@ -1197,7 +854,6 @@ class LitBase(L.LightningModule):
                 batch=batch,
                 sync_dist=True,
                 val_loop_closure=val_loop_closure,
-                loop_error_est=loop_error_est,
             )
 
         total_loss = sum(val_rets[pred_type]['loss'] for pred_type in val_rets.keys())
@@ -1257,7 +913,6 @@ class LitBase(L.LightningModule):
         alpha = (self.alpha_teacher_forcing - self.min_alpha_teacher_forcing)/(1 - self.min_alpha_teacher_forcing)
         trajectory_weight = 1
         loop_closure_weight = (1 - alpha)*self.final_loop_closure_weight + alpha*self.loop_closure_weight
-        random_walk_weight = self.random_walk_weight
         
         for pred_type, ret_dict in train_rets.items():
             loss, metric_vals = ret_dict['loss'], ret_dict['metric_vals']
@@ -1269,10 +924,6 @@ class LitBase(L.LightningModule):
                     loss_weight *= trajectory_weight
                 if 'loop_closure' in pred_type:
                     loss_weight *= loop_closure_weight
-                if 'random_walk' in pred_type:
-                    loss_weight *= random_walk_weight
-                if 'base_integration' in pred_type:
-                    loss_weight *= self.base_integration_weight
                 self.log(f"{pred_type} train {metric}", val*loss_weight, on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
                 
         self.log(f"total train loss", total_loss, on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
@@ -1283,15 +934,15 @@ class LitBase(L.LightningModule):
         if self.teacher_forcing_annealing:
             self.log(f"alpha teacher forcing", self.alpha_teacher_forcing, on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
 
-        # Log gradient statistics
-        for name, param in self.named_parameters():
-            if param.grad is not None:
-                grad_norm = param.grad.norm()
-                self.log(f"gradients/{name}_norm", grad_norm, on_step=True, on_epoch=True, sync_dist=sync_dist)
-                self.log(f"gradients/{name}_mean", param.grad.mean(), on_step=True, on_epoch=True, sync_dist=sync_dist)
-                self.log(f"gradients/{name}_std", param.grad.std(), on_step=True, on_epoch=True, sync_dist=sync_dist)
-                self.log(f"gradients/{name}_max", param.grad.max(), on_step=True, on_epoch=True, sync_dist=sync_dist)
-                self.log(f"gradients/{name}_min", param.grad.min(), on_step=True, on_epoch=True, sync_dist=sync_dist)
+        # # Log gradient statistics
+        # for name, param in self.named_parameters():
+        #     if param.grad is not None:
+        #         grad_norm = param.grad.norm()
+        #         self.log(f"gradients/{name}_norm", grad_norm, on_step=True, on_epoch=True, sync_dist=sync_dist)
+        #         self.log(f"gradients/{name}_mean", param.grad.mean(), on_step=True, on_epoch=True, sync_dist=sync_dist)
+        #         self.log(f"gradients/{name}_std", param.grad.std(), on_step=True, on_epoch=True, sync_dist=sync_dist)
+        #         self.log(f"gradients/{name}_max", param.grad.max(), on_step=True, on_epoch=True, sync_dist=sync_dist)
+        #         self.log(f"gradients/{name}_min", param.grad.min(), on_step=True, on_epoch=True, sync_dist=sync_dist)
 
         # Log Jacobian metrics
         if self.eq is not None and jacs_pred is not None:
@@ -1308,20 +959,7 @@ class LitBase(L.LightningModule):
             self.log(f"train jac loss", jac_loss, on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
             self.log(f"train jac r2_score", r2_score(jacs_true_cpu.flatten(), jacs_pred_cpu.flatten()), 
                     on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist, prog_bar=prog_bar)
-            self.log(f"train jac nuclear norm loss", torch.norm(jacs_pred.to(batch.device) - jacs_true.to(batch.device), p='nuc', dim=(-2, -1)).mean(), on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
-        
-            if self.deriv_model is not None:
-                if self.data_type == 'dysts':
-                    deriv_true_cpu = self.eq.rhs(batch.cpu().numpy(), np.arange(batch.shape[-2])*self.dt)
-                else:
-                    deriv_true = self.eq.rhs(batch, batch.shape[-2]*self.dt)
-                    deriv_true_cpu = deriv_true.cpu().numpy()
-                deriv_pred = self.deriv_model(torch.arange(batch.shape[-2]).to(batch.device)*self.dt, batch)
-                deriv_pred_cpu = deriv_pred.detach().cpu().numpy()
-                deriv_loss = mse(deriv_true_cpu, deriv_pred_cpu)
-                self.log(f"train deriv loss", deriv_loss, on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
-                self.log(f"train deriv r2_score", r2_score(deriv_true_cpu.flatten(), deriv_pred_cpu.flatten()), 
-                        on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist, prog_bar=prog_bar)
+            # self.log(f"train jac nuclear norm loss", torch.norm(jacs_pred.to(batch.device) - jacs_true.to(batch.device), p='nuc', dim=(-2, -1)).mean(), on_step=on_step, on_epoch=on_epoch, sync_dist=sync_dist)
 
     def log_validation_metrics(self, val_rets, batch, sync_dist=True, val_loop_closure=None):
         """Log validation metrics.
@@ -1369,26 +1007,6 @@ class LitBase(L.LightningModule):
                     r2_score(jacs_true_cpu.flatten(), jacs_pred_cpu.flatten()), 
                     sync_dist=sync_dist, 
                     add_dataloader_idx=False)
-            
-            if self.deriv_model is not None:
-                if self.data_type == 'dysts':
-                    deriv_true_cpu = self.eq.rhs(batch.cpu().numpy(), np.arange(batch.shape[-2])*self.dt)
-                else:
-                    deriv_true = self.eq.rhs(batch, batch.shape[-2]*self.dt)
-                    deriv_true_cpu = deriv_true.cpu().numpy()
-                deriv_pred = self.deriv_model(torch.arange(batch.shape[-2]).to(batch.device)*self.dt, batch)
-
-                
-                deriv_pred_cpu = deriv_pred.detach().cpu().numpy()
-
-                self.log(f"val deriv loss", 
-                        mse(deriv_true_cpu, deriv_pred_cpu), 
-                        sync_dist=sync_dist, 
-                        add_dataloader_idx=False)
-                self.log(f"val deriv r2_score", 
-                        r2_score(deriv_true_cpu.flatten(), deriv_pred_cpu.flatten()), 
-                        sync_dist=sync_dist, 
-                        add_dataloader_idx=False)
 
     def calc_metrics(self, y_true, y_pred):
         """Calculate various metrics between true and predicted values.
@@ -1422,8 +1040,6 @@ class LitBase(L.LightningModule):
             optimizer = torch.optim.AdamW(self.parameters(), **self.optimizer_kwargs)
         elif self.optimizer == 'LBFGS':
             optimizer = torch.optim.LBFGS(self.parameters(), **self.optimizer_kwargs)
-        elif self.optimizer == 'SSBroyden':
-            optimizer = SelfScaledBroyden(self.parameters(), **self.optimizer_kwargs)
         else:
             raise ValueError(f'Optimizer {self.optimizer} not recognized')
 

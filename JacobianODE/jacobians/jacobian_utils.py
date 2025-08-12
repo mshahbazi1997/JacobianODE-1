@@ -43,12 +43,16 @@ def initialize_config(cfg):
     # FINISH SETUP FOR CONFIG
     # ----------------------------------------
 
-    raise ValueError('No save_dir due to anonymizing code base')
-
+    # set the lightning module target
     model_module_components = cfg.model.params._target_.split('.')
     model_module_components[-1] = 'Lit' + model_module_components[-1]
     cfg.training.lightning._target_ = '.'.join(model_module_components)
     cfg.training.lightning.data_type = cfg.data.data_type
+
+    # ----------------------------------------
+    # SET DIMENSIONS
+    # ----------------------------------------
+    # collect the dimension of the data
     if cfg.data.data_type == 'dysts':
         eq = instantiate(cfg.data.flow)
         if cfg.data.train_test_params.delay_embedding_params.observed_indices == 'all':
@@ -56,31 +60,25 @@ def initialize_config(cfg):
         else:
             dim = len(cfg.data.train_test_params.delay_embedding_params.observed_indices)*cfg.data.train_test_params.delay_embedding_params.n_delays
     elif cfg.data.data_type == 'wmtask':
-        # "BiologicalRNN__cue_time_0.1__learning_rate_0.0005__max_epochs_40__N1_64__N2_64__tau_0.05__dt_0.02__eig_lower_bound_0.1" # ***
         # assuming the above string is cfg.data.flow.name, parse out the sum of N1 and N2
         N1 = int(cfg.data.flow.name.split('__N1_')[1].split('__')[0])
         N2 = int(cfg.data.flow.name.split('__N2_')[1].split('__')[0])
         dim = N1 + N2
+    elif cfg.data.data_type == 'custom':
+        dim = cfg.data.custom.dim
+    else:
+        raise ValueError(f"Data type {cfg.data.data_type} not supported")
+    
+    # set the input dimension
     if 'input_dim' in cfg.model.params:
         cfg.model.params.input_dim = dim
-    if cfg.model.deriv_params is not None and 'id_val' not in cfg.model.deriv_params and 'self' not in cfg.model.deriv_params:
-        cfg.model.deriv_params.input_dim = dim
 
-    if 'Transformer' in cfg.model.params._target_:
-        cfg.model.params.max_len = cfg.data.trajectory_params.n_periods * cfg.data.trajectory_params.pts_per_period if cfg.data.data_type == 'dysts' else 50
-
-    # Set the output dim
-    if 'NeuralODE' not in cfg.model.params._target_ and 'JacComboODE' not in cfg.model.params._target_:
+    # set the output dimension
+    if 'NeuralODE' not in cfg.model.params._target_:
         if cfg.training.lightning.direct:
             cfg.model.params.output_dim = dim ** 2
         else:  # not direct jacobian estimation
             cfg.model.params.output_dim = dim
-    if 'shPLRNN' in cfg.model.params._target_:
-        cfg.model.params.latent_dim = cfg.model.params.output_dim
-        cfg.model.params.hidden_dim = cfg.model.params.latent_dim*8
-    
-    if cfg.model.deriv_params is not None and 'id_val' not in cfg.model.deriv_params and 'self' not in cfg.model.deriv_params and 'NeuralODE' not in cfg.model.deriv_params._target_:
-            cfg.model.deriv_params.output_dim = dim
 
     return cfg
 
@@ -106,6 +104,9 @@ def make_trajectories(cfg, save_dir=None, verbose=False):
         eq, sol, dt = make_dysts_trajectories(cfg, save_dir=save_dir, verbose=verbose)
     elif cfg.data.data_type == 'wmtask':
         eq, sol, dt = make_wmtask_trajectories(cfg, verbose=verbose)
+    elif cfg.data.data_type == 'custom':
+        ## TODO: add custom data type
+        pass
     return eq, sol, dt
 
 def make_dysts_trajectories(cfg, save_dir=None, verbose=False, save_file=True):
@@ -131,6 +132,7 @@ def make_dysts_trajectories(cfg, save_dir=None, verbose=False, save_file=True):
     # ----------------------------------------
     if save_dir is None:
         save_dir = cfg.training.logger.save_dir
+    os.makedirs(save_dir, exist_ok=True)
     data_save_dir = os.path.join(save_dir, 'dysts_data')
     if save_file:
         os.makedirs(data_save_dir, exist_ok=True)
@@ -223,7 +225,7 @@ def make_wmtask_trajectories(cfg, verbose=False):
 
     return eq, sol, dt
 
-def postprocess_data(cfg, sol, sol_to_use_for_noise=None, scale_noise=True):
+def postprocess_data(cfg, raw_values, raw_values_to_use_for_noise=None, scale_noise=True):
     """Post-process trajectory data by adding noise and/or filtering.
     
     Applies observation noise and optional filtering to the trajectory data.
@@ -231,8 +233,8 @@ def postprocess_data(cfg, sol, sol_to_use_for_noise=None, scale_noise=True):
     
     Args:
         cfg (OmegaConf): Configuration object containing postprocessing parameters
-        sol (dict): Dictionary containing trajectory solutions
-        sol_to_use_for_noise (dict, optional): Alternative solution to use for noise scaling. Defaults to None.
+        raw_values (numpy.ndarray or torch.Tensor): Raw trajectory values - must be of shape (n_traj, time_steps, n_dim)
+        raw_values_to_use_for_noise (numpy.ndarray or torch.Tensor, optional): Alternative raw values to use for noise scaling. Defaults to None.
         scale_noise (bool, optional): Whether to scale noise based on data magnitude. Defaults to True.
         
     Returns:
@@ -242,11 +244,12 @@ def postprocess_data(cfg, sol, sol_to_use_for_noise=None, scale_noise=True):
     # POSTPROCESS
     # ----------------------------------------
     if scale_noise:
-        if sol_to_use_for_noise is None:
-            obs_noise = cfg.data.postprocessing.obs_noise * float(np.linalg.norm(sol['values'], axis=-1).mean() / np.sqrt(sol['values'].shape[-1]))
+        if raw_values_to_use_for_noise is None:
+            obs_noise = cfg.data.postprocessing.obs_noise * float(np.linalg.norm(raw_values, axis=-1).mean() / np.sqrt(raw_values.shape[-1]))
         else:
-            obs_noise = cfg.data.postprocessing.obs_noise * float(np.linalg.norm(sol_to_use_for_noise['values'], axis=-1).mean() / np.sqrt(sol_to_use_for_noise['values'].shape[-1]))
-    values = sol['values']
+            obs_noise = cfg.data.postprocessing.obs_noise * float(np.linalg.norm(raw_values_to_use_for_noise, axis=-1).mean() / np.sqrt(raw_values_to_use_for_noise.shape[-1]))
+    
+    values = raw_values.copy()
     if obs_noise > 0:
         if isinstance(values, torch.Tensor):
             values += torch.randn_like(values) * obs_noise
@@ -276,7 +279,7 @@ def normalize_data(values):
     values = (values - mu) / sigma
     return values, mu, sigma
 
-def create_dataloaders(cfg, values, use_test=False, verbose=False):
+def create_dataloaders(cfg, values, verbose=False):
     """Create PyTorch DataLoaders for training, validation, and testing.
     
     Generates DataLoader objects for continuous trajectory data, handling both
@@ -309,7 +312,6 @@ def create_dataloaders(cfg, values, use_test=False, verbose=False):
     persistent_workers = True
     pin_memory = True
 
-
     # CONTINUOUS TRAJECTORY
     train_dataloader_continuous = utils.data.DataLoader(train_dataset, batch_size=cfg.training.batch_size, shuffle=True, num_workers=num_workers, persistent_workers=persistent_workers, pin_memory=pin_memory)
     val_dataloader_continuous = utils.data.DataLoader(val_dataset, batch_size=cfg.training.batch_size, shuffle=False, num_workers=num_workers, persistent_workers=persistent_workers, pin_memory=pin_memory)
@@ -317,7 +319,7 @@ def create_dataloaders(cfg, values, use_test=False, verbose=False):
 
     return train_dataloader_continuous, val_dataloader_continuous, test_dataloader_continuous, trajs
 
-def setup_wandb(cfg, trajs, log=None, sol_to_use_for_noise=None, scale_noise=True):
+def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_noise=True):
     """Set up Weights & Biases logging for the training run.
     
     Configures W&B logging, including noise scaling and run naming.
@@ -325,9 +327,9 @@ def setup_wandb(cfg, trajs, log=None, sol_to_use_for_noise=None, scale_noise=Tru
     
     Args:
         cfg (OmegaConf): Configuration object containing W&B parameters
-        trajs (dict): Dictionary containing trajectory information
+        trajs (dict): Dictionary containing trajectory information. Must contain 'train_trajs' with sequence of shape (n_traj, time_steps, n_dim)
         log (Logger, optional): Logger object for output. Defaults to None.
-        sol_to_use_for_noise (dict, optional): Alternative solution for noise scaling. Defaults to None.
+        raw_values_to_use_for_noise (numpy.ndarray or torch.Tensor, optional): Alternative raw values to use for noise scaling. Defaults to None.
         scale_noise (bool, optional): Whether to scale noise. Defaults to True.
         
     Returns:
@@ -339,20 +341,15 @@ def setup_wandb(cfg, trajs, log=None, sol_to_use_for_noise=None, scale_noise=Tru
     # SET UP WANDB
     # ----------------------------------------
     if scale_noise:
-        if sol_to_use_for_noise is None:
+        if raw_values_to_use_for_noise is None:
             cfg.training.lightning.obs_noise_scale = cfg.training.lightning.obs_noise_scale * float(torch.linalg.norm(trajs['train_trajs'].sequence, dim=-1).mean() / np.sqrt(trajs['train_trajs'].sequence.shape[-1]))
             cfg.training.lightning.obs_noise_scale_validation = cfg.training.lightning.obs_noise_scale_validation * float(torch.linalg.norm(trajs['train_trajs'].sequence, dim=-1).mean() / np.sqrt(trajs['train_trajs'].sequence.shape[-1]))
             cfg.training.lightning.obs_noise_scale_loop = cfg.training.lightning.obs_noise_scale_loop * float(torch.linalg.norm(trajs['train_trajs'].sequence, dim=-1).mean() / np.sqrt(trajs['train_trajs'].sequence.shape[-1]))
         else:
-            cfg.training.lightning.obs_noise_scale = cfg.training.lightning.obs_noise_scale * float(np.linalg.norm(sol_to_use_for_noise['values'], axis=-1).mean() / np.sqrt(sol_to_use_for_noise['values'].shape[-1]))
-            cfg.training.lightning.obs_noise_scale_validation = cfg.training.lightning.obs_noise_scale_validation * float(np.linalg.norm(sol_to_use_for_noise['values'], axis=-1).mean() / np.sqrt(sol_to_use_for_noise['values'].shape[-1]))
-            cfg.training.lightning.obs_noise_scale_loop = cfg.training.lightning.obs_noise_scale_loop * float(np.linalg.norm(sol_to_use_for_noise['values'], axis=-1).mean() / np.sqrt(sol_to_use_for_noise['values'].shape[-1]))
+            cfg.training.lightning.obs_noise_scale = cfg.training.lightning.obs_noise_scale * float(np.linalg.norm(raw_values_to_use_for_noise, axis=-1).mean() / np.sqrt(raw_values_to_use_for_noise.shape[-1]))
+            cfg.training.lightning.obs_noise_scale_validation = cfg.training.lightning.obs_noise_scale_validation * float(np.linalg.norm(raw_values_to_use_for_noise, axis=-1).mean() / np.sqrt(raw_values_to_use_for_noise.shape[-1]))
+            cfg.training.lightning.obs_noise_scale_loop = cfg.training.lightning.obs_noise_scale_loop * float(np.linalg.norm(raw_values_to_use_for_noise, axis=-1).mean() / np.sqrt(raw_values_to_use_for_noise.shape[-1]))
 
-    if 'MLP' in cfg.model.params._target_:
-        if cfg.model.params.final_layer_scale_factor is not None:
-            cfg.model.params.final_layer_scale_factor = cfg.model.params.final_layer_scale_factor*(float(trajs['train_trajs'].sequence.std()**2))
-        else:
-            cfg.model.params.final_layer_scale_factor = 1.0
     name, project = make_run_info(cfg)
 
     # log.info("Checking for preexisting runs...")
@@ -408,43 +405,11 @@ def make_model(cfg, dt, eq=None, project=None, x0=None, save_dir=None, mu=0, sig
     # MAKE MODEL
     # ----------------------------------------
     jac_model = instantiate(cfg.model.params)
-    if 'deriv_params' in cfg.model and cfg.model.deriv_params is not None:
-        if 'id_val' in cfg.model.deriv_params:
-            print(f"Loading pretrained deriv model from {cfg.model.deriv_params.id_val}")
-            api = wandb.Api(timeout=20)
-            if project is None:
-                raise ValueError("Project must be provided if using a pretrained deriv model")
-            run = api.run(f"{project}/{cfg.model.deriv_params.id_val}")
-            cfg_v2 = OmegaConf.create(run.config)
-            lit_model, _, _ = make_model(cfg_v2, dt, eq=eq, save_dir=save_dir, mu=mu, sigma=sigma, verbose=verbose)
-            print(f"cfg_v2.model: {cfg_v2.model}")
-            load_checkpoint(run, cfg_v2, lit_model, save_dir=save_dir, epoch=None, verbose=True)
-            if lit_model.deriv_model is not None:
-                deriv_model = lit_model.deriv_model.eval()
-            else:
-                deriv_model = lit_model.model.eval()
-                # prevent gradient flow through deriv_model
-            for param in deriv_model.parameters():
-                param.requires_grad = False
-        elif 'self' in cfg.model.deriv_params:
-            if jac_model.__class__.__name__ != 'NeuralODE':
-                raise ValueError("self as deriv model is only supported for NeuralODE")
-            print("Using self as deriv model (neuralODE)")
-            deriv_model = jac_model
-        elif '_target_' in cfg.model.deriv_params:
-            print(f"Instantiating deriv model from {cfg.model.deriv_params}")
-            deriv_model = instantiate(cfg.model.deriv_params)
-        else:
-            raise ValueError(f"Invalid deriv_params: {cfg.model.deriv_params}")
-    else:
-        if verbose:
-            print("No deriv model specified, using None")
-        deriv_model = None
-    lit_model = instantiate(cfg.training.lightning, model=jac_model, deriv_model=deriv_model, dt=dt, save_dir=cfg.training.logger.save_dir, base_pt_init=x0, mu=mu, sigma=sigma)
+    lit_model = instantiate(cfg.training.lightning, model=jac_model, dt=dt, save_dir=cfg.training.logger.save_dir, base_pt_init=x0, mu=mu, sigma=sigma)
     lit_model.eq = eq
-    return lit_model, jac_model, deriv_model
+    return lit_model
 
-def log_training_info(train_dataloader, trajs, jac_model, deriv_model, log=None):
+def log_training_info(train_dataloader, trajs, lit_model, log=None):
     """Log information about the training setup.
     
     Prints or logs information about the training data size, model parameters,
@@ -460,22 +425,18 @@ def log_training_info(train_dataloader, trajs, jac_model, deriv_model, log=None)
     num_train_examples = len(train_dataloader.dataset.sequence)
     num_traj_points = trajs['train_trajs'].sequence.shape[0] * trajs['train_trajs'].sequence.shape[1]
     num_train_data_points = num_traj_points * trajs['train_trajs'].sequence.shape[2]
-    total_params = sum(p.numel() for p in jac_model.parameters()) + sum(p.numel() for p in deriv_model.parameters()) if deriv_model is not None else sum(p.numel() for p in jac_model.parameters())
+    total_params = sum(p.numel() for p in lit_model.parameters())
 
     if log is not None:
         log.info(f"Number of training trajectory examples: {num_train_examples / 1000:.3f}k")
         log.info(f"Number of training trajectory points: {num_traj_points / 1000:.3f}k")
         log.info(f"Number of training data points: {num_train_data_points / 1000:.3f}k")
-        log.info(f"Total number of jac model parameters: {total_params / 1000:.3f}k")
-        if deriv_model is not None:
-            log.info(f"Total number of deriv model parameters: {sum(p.numel() for p in deriv_model.parameters()) / 1000:.3f}k")
+        log.info(f"Total number of model parameters: {total_params / 1000:.3f}k")
     else:
         print(f"Number of training trajectory examples: {num_train_examples / 1000:.3f}k")
         print(f"Number of training trajectory points: {num_traj_points / 1000:.3f}k")
         print(f"Number of training data points: {num_train_data_points / 1000:.3f}k")
-        print(f"Total number of jac model parameters: {total_params / 1000:.3f}k")
-        if deriv_model is not None:
-            print(f"Total number of deriv model parameters: {sum(p.numel() for p in deriv_model.parameters()) / 1000:.3f}k")
+        print(f"Total number of model parameters: {total_params / 1000:.3f}k")
 
 def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, project):
     """Train the model using PyTorch Lightning.
@@ -526,6 +487,19 @@ def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, projec
             mode=cfg.training.early_stopping.mode,
         )
     
+    # check if interactive environment
+    def in_ipython():
+        try:
+            get_ipython
+            return True
+        except NameError:
+            return False
+
+    if in_ipython():
+        strategy = 'ddp_notebook'
+    else:
+        strategy = 'ddp'
+    
     trainer = L.Trainer(
         callbacks=[checkpoint_callback, early_stopping_callback],
         logger=logger,
@@ -534,7 +508,7 @@ def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, projec
         # accelerator='auto',
         # devices=1 if os.path.exists('/home/millerlab-gpu') else 'auto'
         devices='auto',
-        strategy='ddp'
+        strategy=strategy
     )
 
     trainer.fit(model=lit_model, train_dataloaders=train_dataloaders, val_dataloaders=val_dataloaders)

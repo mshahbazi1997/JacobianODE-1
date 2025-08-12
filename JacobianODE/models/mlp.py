@@ -62,10 +62,6 @@ class MLP(nn.Module):
         residuals (bool): Whether to use residual connections
         dropout (float): Dropout probability
         activation (str): Name of activation function to use
-        use_pre_layer_norm (bool): Whether to use layer normalization before each linear layer
-        use_pre_batch_norm (bool): Whether to use batch normalization before each linear layer
-        use_mean_and_scale (bool): Whether to learn mean and scale parameters for output
-        final_layer_scale_factor (float): Scale factor for the final layer
     """
     def __init__(
             self, 
@@ -76,23 +72,12 @@ class MLP(nn.Module):
             residuals=False, 
             dropout=0.0, 
             activation='relu', 
-            use_pre_layer_norm=False, 
-            use_pre_batch_norm=False, 
-            use_mean_and_scale=False, 
-            final_layer_scale_factor=1.0,
         ):
         super(MLP, self).__init__()
 
         self.residuals = residuals
         self.dropout = dropout
         self.activation = activation
-        self.use_pre_layer_norm = use_pre_layer_norm
-        self.use_pre_batch_norm = use_pre_batch_norm
-        self.use_mean_and_scale = use_mean_and_scale
-
-        if final_layer_scale_factor is None:
-            final_layer_scale_factor = 1.0
-        self.final_layer_scale_factor = final_layer_scale_factor
 
         self.layers = nn.ModuleList()
         
@@ -127,15 +112,6 @@ class MLP(nn.Module):
 
             # Add output layer
             self.layers.extend(self._create_layer(self.hidden_dims[-1], output_dim, activation=None, dropout=0.0, no_activation=True, layer_idx=num_layers))
-
-        if use_mean_and_scale:
-            self.mu = nn.Parameter(torch.zeros(1))
-            self.log_sigma = nn.Parameter(torch.zeros(1))
-        else:
-            self.mu = torch.tensor(0)
-            self.log_sigma = torch.tensor(0)
-
-        # self.scale_final_layer(final_layer_scale_factor)
 
         self.MODEL_TYPE = 'MLP'
         
@@ -191,10 +167,6 @@ class MLP(nn.Module):
         if dropout is None:
             dropout = self.dropout
         layers = []
-        if self.use_pre_layer_norm:
-            layers.append(nn.LayerNorm(in_dim))
-        if self.use_pre_batch_norm:
-            layers.append(nn.BatchNorm1d(in_dim))
 
         layers.append(nn.Linear(in_dim, out_dim))
     
@@ -216,7 +188,7 @@ class MLP(nn.Module):
         """
         for layer in self.layers:
             x = layer(x)
-        return x*torch.exp(self.log_sigma) + self.mu
+        return x
     
     # implement forward but with teacher forcing
     # the teacher forcing parameter is alpha
@@ -255,7 +227,6 @@ class LitMLP(LitBase):
 
     Args:
         direct (bool): Whether to compute Jacobians directly or using autograd
-        rescaling_sigma (float): Scaling factor for Jacobians
         dt (float): Time step size for Jacobian computation
     """
 
@@ -276,7 +247,7 @@ class LitMLP(LitBase):
             torch.Tensor: Jacobian matrices of shape (..., T, output_dim, input_dim)
         """
         if self.direct:
-            return self.model(batch).reshape(*batch.shape[:-1], batch.shape[-1], batch.shape[-1])*self.rescaling_sigma
+            return self.model(batch).reshape(*batch.shape[:-1], batch.shape[-1], batch.shape[-1])
         else: # not direct jacobian estimation
             reshape = False
             if len(batch.shape) > 3:

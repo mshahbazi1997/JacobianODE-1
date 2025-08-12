@@ -10,8 +10,6 @@ from torch import nn
 from tqdm.auto import tqdm
 import wandb
 
-from ..control.controllability import compute_folded_accuracy
-
 # ---------------
 # Data analysis
 # ---------------
@@ -50,89 +48,6 @@ def compute_model_jacs(model, h, dt, tau, discrete=False):
 
 def compute_model_rhs(model, h, dt, tau):
     return (1/tau)*(-h + (model.W_hh.detach().type(h.dtype).to(h.device) @ nn.ELU()(h.unsqueeze(-1))).squeeze(-1).type(h.dtype).to(h.device))
-
-def get_all_test_accuracies(model, area_hiddens, com_signals, areas, area_inds, dataloader_to_use, com_subspace_signals=None, n_splits=5, variable='choice'):
-    # fig, axs = plt.subplots(1, 2, figsize=(12, 5))
-
-    test_accuracies = {}
-
-    if variable == 'choice':
-        labels = dataloader_to_use.dataset.labels
-    elif variable == 'top':
-        labels = dataloader_to_use.dataset.inputs[:, :model.input_dim].argmax(dim=-1)
-    elif variable == 'bottom':
-        labels = dataloader_to_use.dataset.inputs[:, model.input_dim:2*model.input_dim].argmax(dim=-1)
-    
-    n_splits = 5
-    split_inds = []
-    for train_inds, test_inds in KFold(n_splits=n_splits, shuffle=True).split(labels):
-        split_inds.append((train_inds, test_inds))
-    
-    iterator = tqdm(total=n_splits*(dataloader_to_use.dataset.total_t - 1)*len(areas)*(8 if com_subspace_signals is None else 11))
-    
-    subspace_dim = None
-    # subspace_dim = 10
-    # subspace_dim = np.where(np.cumsum(com_SVD['V4']['PFC']['S'].mean(axis=(0, 1))**2)/np.sum((com_SVD['V4']['PFC']['S'].mean(axis=(0, 1))**2).numpy()) > 0.75)[0][0]
-    
-    for area1, inds1 in zip(areas, area_inds):
-        test_accuracies[area1] = {}
-        for area2, inds2 in zip(areas, area_inds):
-            if area1 != area2:
-                
-                test_accuracies[area1][area2] = {}
-                # -----------------
-                # SENDER
-                # -----------------
-                if subspace_dim is None:
-                    sdim = len(inds2)
-                else:
-                    sdim = subspace_dim
-                
-                dx = area_hiddens[area2][:, 1:] - area_hiddens[area2][:, :-1]
-                com_signal = com_signals[area1][area2]['sender']
-                
-    
-                test_accuracies[area1][area2]['com_send'] = compute_folded_accuracy(com_signal[:, :, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                test_accuracies[area1][area2]['dx'] = compute_folded_accuracy(dx, labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                test_accuracies[area1][area2]['x'] = compute_folded_accuracy(area_hiddens[area2][:, 1:], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                test_accuracies[area1][area2]['phi_x'] = compute_folded_accuracy(model.activation(area_hiddens[area2][:, 1:]), labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                if com_subspace_signals is not None:
-                    com_sub_signal = com_subspace_signals[area1][area2]['sender']
-                    test_accuracies[area1][area2]['com_sub_send'] = compute_folded_accuracy(com_sub_signal[:, 1:, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                    com_sub_signal = com_subspace_signals[area1][area2]['overall']
-                    test_accuracies[area1][area2]['com_sub_overall'] = compute_folded_accuracy(com_sub_signal[:, 1:, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                    com_sub_signal = com_subspace_signals[area1][area2]['overall_v2']
-                    test_accuracies[area1][area2]['com_sub_overall_v2'] = compute_folded_accuracy(com_sub_signal[:, 1:, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-    
-                with torch.no_grad():
-                    # _, NJ_S, NJ_Vh = torch.linalg.svd(model.W_hh.cpu()[inds1][:, inds2])
-                    # NJ_dirs = (torch.diag_embed(NJ_S) @ NJ_Vh)[:sdim]
-                    NJ_dirs = model.W_hh.cpu()[inds1][:, inds2]
-                    nj_signals = (NJ_dirs @ model.activation(area_hiddens[area2][:, 1:]).unsqueeze(-1)).squeeze(-1)
-                    test_accuracies[area1][area2]['nj'] = compute_folded_accuracy(nj_signals, labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                
-                # -----------------
-                # RECEIVER
-                # -----------------
-                if subspace_dim is None:
-                    sdim = len(inds1)
-                else:
-                    sdim = subspace_dim
-                
-                dy = area_hiddens[area1][:, 1:] - area_hiddens[area1][:, :-1]
-                com_signal = com_signals[area1][area2]['receiver']
-    
-                test_accuracies[area1][area2]['com_recv'] = compute_folded_accuracy(com_signal[:, :, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                test_accuracies[area1][area2]['dy'] = compute_folded_accuracy(dy, labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-                test_accuracies[area1][area2]['y'] = compute_folded_accuracy(area_hiddens[area1][:, 1:], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-    
-                if com_subspace_signals is not None:
-                    com_sub_signal = com_subspace_signals[area1][area2]['receiver']
-                    test_accuracies[area1][area2]['com_sub_recv'] = compute_folded_accuracy(com_sub_signal[:, 1:, :], labels, split_inds, iterator, verbose=True, n_splits=n_splits)[1]
-    
-    iterator.close()
-
-    return test_accuracies
 
 # ----------------
 # Data generation

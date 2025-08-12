@@ -12,7 +12,3 @@ params:
     # activation: 'sin'
     use_pre_layer_norm: False
     use_mean_and_scale: False
-
-# deriv_params: null
-deriv_params: 
-  self: true

@@ -1,0 +1,24 @@
+flow:
+  random_state: 42
+
+postprocessing:
+  obs_noise: 0
+  filter_data: False
+  low_pass: 10
+  high_pass: null
+  normalize: False
+
+train_test_params:
+  seq_length: 25
+  seq_spacing: 1
+  split_by: 'trajectory'
+  train_percent: 0.7
+  test_percent: 0.1
+  dtype: torch.FloatTensor
+  verbose: True
+  delay_embedding_params:
+    observed_indices: 'all'
+    n_delays: 1
+    delay_spacing: 1
+
+

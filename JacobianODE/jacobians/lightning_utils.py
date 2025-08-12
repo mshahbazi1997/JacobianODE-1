@@ -23,7 +23,7 @@ def make_run_info(cfg):
     name = name + tuple([f"{key}_{value}" for key, value in cfg.data.trajectory_params.items() if key in ("n_periods", "pts_per_period", "standardize", "noise", "num_ics")])
     name = "__".join(name)
 
-    project = (data_cls,'JacobianEstimation')
+    project = (data_cls,'JacobianODE')
     project = "__".join(project)
 
     return name, project
