@@ -31,37 +31,40 @@ def in_ipython():
     except NameError:
         return False
 
-def get_config_path():
-    """Get the config path as a relative path for Hydra."""
-    # Get the package directory
-    package_dir = pathlib.Path(__file__).parent
-    config_dir = package_dir / "conf"
+# def get_config_path():
+#     """Get the config path as a relative path for Hydra."""
+#     # Get the package directory
+#     package_dir = pathlib.Path(__file__).parent
+#     # package_dir = os.path.dirname(package_dir)
+#     config_dir = package_dir / "conf"
     
-    # Get the current working directory
-    current_dir = pathlib.Path.cwd()
+#     # Get the current working directory
+#     current_dir = pathlib.Path.cwd()
+    
+#     return os.path.relpath(config_dir, current_dir)
     
     # Calculate the relative path from current directory to config directory
-    try:
-        relative_path = config_dir.relative_to(current_dir)
-        return str(relative_path)
-    except ValueError:
-        # If we can't make it relative, calculate the path differently
-        # Count how many levels up we need to go
-        current_parts = current_dir.parts
-        config_parts = config_dir.parts
+    # try:
+    #     relative_path = config_dir.relative_to(current_dir)
+    #     return str(relative_path)
+    # except ValueError:
+    #     # If we can't make it relative, calculate the path differently
+    #     # Count how many levels up we need to go
+    #     current_parts = current_dir.parts
+    #     config_parts = config_dir.parts
         
-        # Find common prefix
-        common_prefix_len = 0
-        for i, (current_part, config_part) in enumerate(zip(current_parts, config_parts)):
-            if current_part == config_part:
-                common_prefix_len = i + 1
-            else:
-                break
+    #     # Find common prefix
+    #     common_prefix_len = 0
+    #     for i, (current_part, config_part) in enumerate(zip(current_parts, config_parts)):
+    #         if current_part == config_part:
+    #             common_prefix_len = i + 1
+    #         else:
+    #             break
         
-        # Build relative path
-        up_levels = len(current_parts) - common_prefix_len
-        relative_parts = [".."] * up_levels + list(config_parts[common_prefix_len:])
-        return "/".join(relative_parts)
+    #     # Build relative path
+    #     up_levels = len(current_parts) - common_prefix_len
+    #     relative_parts = [".."] * up_levels + list(config_parts[common_prefix_len:])
+    #     return "/".join(relative_parts)
 
 def load_config(config_name="config", overrides=None, custom_dataset_loader=None, custom_dataset_loader_kwargs=None):
     """Load a JacobianODE config with optional overrides."""
@@ -82,8 +85,11 @@ def load_config(config_name="config", overrides=None, custom_dataset_loader=None
                     overrides.append(f"+data.dataset_loader.{key}=null")
     
     # Use the package-relative path
-    config_path = get_config_path()
-    
+    # config_path = get_config_path()
+    config_path = 'conf'
+
+    cwd = pathlib.Path.cwd()
+
     with hydra.initialize(version_base="1.3", config_path=config_path):
         return hydra.compose(config_name=config_name, overrides=overrides)
 
@@ -308,7 +314,7 @@ def create_dataloaders(cfg, values, verbose=False):
 
     return train_dataloader_continuous, val_dataloader_continuous, test_dataloader_continuous, trajs
 
-def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_noise=True):
+def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_noise=True, prompt_entity=False):
     """Set up Weights & Biases logging for the training run.
     
     Configures W&B logging, including noise scaling and run naming.
@@ -320,11 +326,13 @@ def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_no
         log (Logger, optional): Logger object for output. Defaults to None.
         raw_values_to_use_for_noise (numpy.ndarray or torch.Tensor, optional): Alternative raw values to use for noise scaling. Defaults to None.
         scale_noise (bool, optional): Whether to scale noise. Defaults to True.
+        prompt_entity (bool, optional): Whether to prompt for entity/team name instead of using config/env. Defaults to False.
         
     Returns:
-        tuple: (name, project) where:
+        tuple: (name, project, entity) where:
             - name: The W&B run name
             - project: The W&B project name
+            - entity: The W&B entity/team name (or None to use default)
     """
     # ----------------------------------------
     # SET UP WANDB
@@ -340,10 +348,36 @@ def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_no
             cfg.training.lightning.obs_noise_scale_loop = cfg.training.lightning.obs_noise_scale_loop * float(np.linalg.norm(raw_values_to_use_for_noise, axis=-1).mean() / np.sqrt(raw_values_to_use_for_noise.shape[-1]))
 
     name, project = make_run_info(cfg)
+    
+    # Prompt for entity/team name if requested (via parameter or environment variable)
+    entity = None
+    if prompt_entity or os.environ.get("WANDB_PROMPT_ENTITY", "").lower() in ("1", "true", "yes"):
+        env_entity = os.environ.get("WANDB_ENTITY", None)
+        suggested_entity = env_entity if env_entity else "default (your personal account)"
+        
+        if env_entity and log is not None:
+            log.info(f"WANDB_ENTITY environment variable is set to: {env_entity}")
+        elif env_entity:
+            print(f"WANDB_ENTITY environment variable is set to: {env_entity}")
+        
+        user_entity = input(f"Enter W&B team/entity name (default: {suggested_entity}, press Enter for None): ").strip()
+        if user_entity:
+            entity = user_entity
+            if log is not None:
+                log.info(f"Using entity: {entity}")
+            else:
+                print(f"Using entity: {entity}")
+        elif env_entity:
+            entity = env_entity
+    else:
+        # Use environment variable if set, otherwise None (wandb will use default)
+        entity = os.environ.get("WANDB_ENTITY", None)
 
     # log.info("Checking for preexisting runs...")
     api = wandb.Api()
-    runs = api.runs(project)
+    # Construct path with entity if provided
+    project_path = f"{entity}/{project}" if entity else project
+    runs = api.runs(project_path)
     try:
         found_run = True
         version = 1
@@ -363,9 +397,9 @@ def setup_wandb(cfg, trajs, log=None, raw_values_to_use_for_noise=None, scale_no
                 version += 1
                 name = f"{base_name}_v{version}"
     except ValueError:
-        print(f"Project {project} does not exist!")
+        print(f"Project {project_path} does not exist!")
 
-    return name, project
+    return name, project, entity
 
 def make_model(cfg, dt, eq=None, project=None, x0=None, save_dir=None, mu=0, sigma=1, verbose=False):
     """Create and initialize the model for training.
@@ -427,7 +461,7 @@ def log_training_info(train_dataloader, trajs, lit_model, log=None):
         print(f"Number of training data points: {num_train_data_points / 1000:.3f}k")
         print(f"Total number of model parameters: {total_params / 1000:.3f}k")
 
-def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, project):
+def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, project, entity=None):
     """Train the model using PyTorch Lightning.
     
     Sets up the training environment including callbacks, logging, and training
@@ -440,15 +474,22 @@ def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, projec
         val_dataloaders (DataLoader or list): Validation data loader(s)
         name (str): Name of the training run
         project (str): W&B project name
+        entity (str, optional): W&B entity/team name. Defaults to None.
     """
     # ----------------------------------------
     # TRAIN MODEL
     # ----------------------------------------
 
+    logger_kwargs = {
+        "name": name,
+        "project": project,
+    }
+    if entity is not None:
+        logger_kwargs["entity"] = entity
+    
     logger = instantiate(
-        cfg.training.logger, 
-        name=name, 
-        project=project,
+        cfg.training.logger,
+        **logger_kwargs
     )
     # logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
 
@@ -482,10 +523,16 @@ def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, projec
     else:
         strategy = 'ddp'
     
+    # Extract gradient clipping parameters from the lightning model
+    gradient_clip_val = lit_model.gradient_clip_val
+    gradient_clip_algorithm = lit_model.gradient_clip_algorithm
+    
     trainer = L.Trainer(
         callbacks=[checkpoint_callback, early_stopping_callback],
         logger=logger,
         log_every_n_steps=10,
+        gradient_clip_val=gradient_clip_val,
+        gradient_clip_algorithm=gradient_clip_algorithm,
         **cfg.training.trainer_params,
         # accelerator='auto',
         # devices=1 if os.path.exists('/home/millerlab-gpu') else 'auto'
@@ -588,9 +635,6 @@ def load_run(project, run_id=None, run=None, save_dir=None, no_noise=False, gene
             val_dataloader = None
             test_dataloader = None
             trajs = None
-
-        # Set up WANDB
-        # name, project = setup_wandb(cfg, trajs)
         
         if 'params' in cfg.model:
             cfg.model.params = cfg.model.params

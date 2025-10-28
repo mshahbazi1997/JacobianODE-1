@@ -10,7 +10,6 @@ log = logging.getLogger('JacobianLogger')
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def train_jacobians(cfg):
-    print(in_ipython())
     # check if ipython
     # if in_ipython():
     #     log = None
@@ -69,7 +68,11 @@ def train_jacobians(cfg):
     # ----------------------------------------
     # SET UP WANDB
     # ----------------------------------------
-    name, project = setup_wandb(cfg, trajs, raw_values_to_use_for_noise=raw_values_noise)
+    if cfg.wandb_entity is None:
+        prompt_entity = True
+    else:
+        prompt_entity = False
+    name, project, entity = setup_wandb(cfg, trajs, raw_values_to_use_for_noise=raw_values_noise, prompt_entity=prompt_entity)
 
     # ----------------------------------------
     # MAKE MODEL
@@ -96,7 +99,7 @@ def train_jacobians(cfg):
     # ----------------------------------------
     # TRAIN MODEL
     # ----------------------------------------
-    # train_model(cfg, lit_model, train_dataloader, val_dataloader, name, project)
+    train_model(cfg, lit_model, train_dataloader, val_dataloader, name, project, entity=entity)
 
 if __name__ == "__main__":
     train_jacobians()

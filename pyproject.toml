@@ -1,22 +1,47 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [project]
 name = "JacobianODE"
 version = "0.1.0"
 description = "A package for Jacobian-based ODE analysis"
+authors = [
+  {name = "Adam J. Eisen", email = "eisenaj@mit.edu" }
+]
 requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision",
+    "torchaudio",
+    "lightning>=2.0.0",
+    "jupyter",
+    "jupyterlab",
+    "matplotlib",
+    "numba",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "scipy",
+    "seaborn",
+    "colorcet",
+    "tqdm",
+    "cython",
+    "hydra-core",
+    "hydra-submitit-launcher",
+    "hydra-list-sweeper",
+    "wandb==0.18.3",
+    "OmegaConf",
+    "torchquad",
+    "torchdiffeq",
+    "sdeint",
+    "torchcubicspline @ git+https://github.com/patrick-kidger/torchcubicspline.git"
+]
 
-[tool.setuptools]
-packages = ["JacobianODE"]
-package-dir = {"" = "."}
-
-[tool.black]
-line-length = 100
-target-version = ["py311"]
-
-[tool.isort]
-profile = "black"
-line_length = 100
-multi_line_output = 3 
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+]

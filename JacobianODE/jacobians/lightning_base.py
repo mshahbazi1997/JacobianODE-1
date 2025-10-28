@@ -1056,14 +1056,10 @@ class LitBase(L.LightningModule):
                     "scheduler": scheduler,
                     "interval": "step",
                 },
-                "gradient_clip_val": self.gradient_clip_val,
-                "gradient_clip_algorithm": self.gradient_clip_algorithm,
             }
         else:
             return {
                 "optimizer": optimizer,
-                "gradient_clip_val": self.gradient_clip_val,
-                "gradient_clip_algorithm": self.gradient_clip_algorithm,
             }
 
     def optimizer_step(self, *args, **kwargs):

@@ -8,6 +8,7 @@ defaults:
 
 
 logger: wandb
+wandb_entity: chaotic-consciousness
 
 hydra:
   # mode: MULTIRUN
