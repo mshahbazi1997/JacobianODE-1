@@ -303,10 +303,8 @@ def create_dataloaders(cfg, values, verbose=False):
         del cfg.data.train_test_params[key]
     train_dataset, val_dataset, test_dataset, trajs = generate_train_and_test_sets(values, **cfg.data.train_test_params)
 
-    # Disable multiprocessing for macOS to avoid DataLoader worker crashes
-    # On macOS, multiprocessing in DataLoader can cause issues
-    num_workers = 0  # Changed from 2 to 0 for macOS compatibility
-    persistent_workers = False  # Must be False when num_workers=0
+    num_workers = 2
+    persistent_workers = True
     pin_memory = True
 
     # CONTINUOUS TRAJECTORY
@@ -524,11 +522,6 @@ def train_model(cfg, lit_model, train_dataloaders, val_dataloaders, name, projec
         strategy = 'ddp_notebook'
     else:
         strategy = 'ddp'
-
-    # Override strategy if CPU/MPS accelerator is used (DDP not supported on MPS, may cause issues on CPU)
-    accelerator = cfg.training.trainer_params.get('accelerator', 'auto')
-    if accelerator in ['mps', 'cpu']:
-        strategy = 'auto'
 
     # Extract gradient clipping parameters from the lightning model
     gradient_clip_val = lit_model.gradient_clip_val
