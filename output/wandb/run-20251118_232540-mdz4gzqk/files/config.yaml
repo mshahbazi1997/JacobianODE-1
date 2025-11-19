@@ -1,0 +1,176 @@
+_wandb:
+    value:
+        cli_version: 0.18.3
+        m:
+            - "1": trainer/global_step
+              "6":
+                - 3
+              "7": []
+        python_version: 3.11.14
+        t:
+            "1":
+                - 1
+                - 5
+                - 9
+                - 41
+                - 50
+                - 53
+                - 55
+                - 103
+                - 106
+            "2":
+                - 1
+                - 5
+                - 9
+                - 41
+                - 50
+                - 53
+                - 55
+                - 103
+                - 106
+            "3":
+                - 7
+                - 13
+                - 23
+                - 55
+                - 66
+            "4": 3.11.14
+            "5": 0.18.3
+            "8":
+                - 5
+            "12": 0.18.3
+            "13": darwin-arm64
+data:
+    value:
+        data_type: dysts
+        flow:
+            _target_: JacobianODE.dysts_sim.flows.Lorenz
+            dt: null
+            random_state: 42
+        postprocessing:
+            filter_data: false
+            high_pass: null
+            low_pass: 10
+            normalize: false
+            obs_noise: 0.01
+        train_test_params:
+            delay_embedding_params:
+                delay_spacing: 1
+                n_delays: 1
+                observed_indices: all
+            dtype: torch.FloatTensor
+            seq_length: 25
+            seq_spacing: 1
+            split_by: trajectory
+            test_percent: 0.1
+            train_percent: 0.7
+            verbose: false
+        trajectory_params:
+            method: Radau
+            n_periods: 12
+            new_ic_mode: random
+            noise: 0
+            num_ics: 32
+            pts_per_period: 100
+            resample: true
+            return_times: true
+            standardize: false
+            traj_offset_sd: 0.2
+            verbose: false
+logger:
+    value: wandb
+model:
+    value:
+        params:
+            _target_: JacobianODE.models.mlp.MLP
+            activation: silu
+            dropout: 0
+            hidden_dim:
+                - 256
+                - 1024
+                - 2048
+                - 2048
+            input_dim: 3
+            num_layers: 4
+            output_dim: 9
+            residuals: false
+training:
+    value:
+        batch_size: 16
+        early_stopping:
+            early_stopping_mode: percent_thresh
+            early_stopping_patience: 2
+            mode: min
+            monitor: mean val loss
+            percent_thresh: 0.01
+        lightning:
+            _target_: JacobianODE.models.mlp.LitMLP
+            alpha_hal: 0.1
+            alpha_teacher_forcing: 1
+            alpha_validation: 0
+            data_type: dysts
+            direct: true
+            final_loop_closure_weight: null
+            final_obs_noise_scale: 0
+            gamma_teacher_forcing: 0.999
+            gradient_clip_algorithm: norm
+            gradient_clip_val: 1
+            inner_N_validation: 20
+            jac_norm_ord: fro
+            jac_penalty: 0
+            jacobianODEint_kwargs:
+                inner_N: 20
+                inner_path: line
+                interp_pts: 4
+                traj_init_steps: 15
+            k_scale: 1
+            l1_penalty: 0
+            l2_penalty: 0
+            log_interval: 100
+            loop_closure_int_method: Trapezoid
+            loop_closure_interp_pts: 20
+            loop_closure_training: true
+            loop_closure_weight: 0.001
+            loss_func: mse
+            loss_func_validation: mse
+            max_loop_closure_interp_pts: null
+            min_alpha_teacher_forcing: 0
+            min_lr: 1e-06
+            mix_trajectories: true
+            n_loop_pts: 20
+            n_loops: null
+            noise_annealing: false
+            obs_noise_scale: 0
+            obs_noise_scale_loop: 0
+            obs_noise_scale_validation: 0
+            optimizer: AdamW
+            optimizer_kwargs:
+                lr: 0.0001
+                weight_decay: 0.0001
+            teacher_forcing_annealing: true
+            teacher_forcing_steps: 1
+            teacher_forcing_update_interval: 5
+            traj_init_steps_validation: 15
+            trajectory_training: true
+            use_base_deriv_pt: false
+            use_scheduler: true
+            y0_noise_scale: 0
+        logger:
+            _target_: pytorch_lightning.loggers.WandbLogger
+            log_model: true
+            save_dir: ./output
+        logger_save_dirs: null
+        model_checkpoint:
+            mode: min
+            monitor: mean val loss
+            save_top_k: 1
+        run_number: 0
+        trainer_params:
+            accelerator: mps
+            accumulate_grad_batches: 4
+            devices: 1
+            limit_train_batches: 500
+            limit_val_batches: 100
+            max_epochs: 100
+wandb_entity:
+    value: chaotic-consciousness

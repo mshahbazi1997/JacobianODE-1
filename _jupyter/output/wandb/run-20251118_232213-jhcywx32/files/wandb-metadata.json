@@ -1,0 +1,36 @@
+{
+  "os":  "macOS-15.5-arm64-arm-64bit",
+  "python":  "3.11.14",
+  "startedAt":  "2025-11-19T04:22:13.378832Z",
+  "program":  "/Users/mahdiyarshahbazi/Documents/GitHub/JacobianODE/_jupyter/Lorenz (Demo).ipynb",
+  "git":  {
+    "remote":  "https://github.com/adamjeisen/JacobianODE.git",
+    "commit":  "f3334b66f6af38d208da13ea19860e56c220edab"
+  },
+  "email":  "mahdiyar.sh45@gmail.com",
+  "root":  "./output",
+  "host":  "Mahdiyars-MacBook-Pro-4.local",
+  "username":  "mahdiyarshahbazi",
+  "executable":  "/Users/mahdiyarshahbazi/miniconda3/envs/jacobian/bin/python",
+  "codePathLocal":  "Lorenz (Demo).ipynb",
+  "cpu_count":  14,
+  "cpu_count_logical":  14,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "378767118336"
+    }
+  },
+  "memory":  {
+    "total":  "51539607552"
+  },
+  "cpu":  {
+    "count":  14,
+    "countLogical":  14
+  },
+  "gpuapple":  {
+    "gpuType":  "Apple M4 Pro",
+    "vendor":  "sppci_vendor_Apple",
+    "cores":  20
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "os":  "macOS-15.5-arm64-arm-64bit",
+  "python":  "3.11.14",
+  "startedAt":  "2025-11-19T04:30:22.645029Z",
+  "program":  "<python with no main file>",
+  "git":  {
+    "remote":  "https://github.com/adamjeisen/JacobianODE.git",
+    "commit":  "f3334b66f6af38d208da13ea19860e56c220edab"
+  },
+  "email":  "mahdiyar.sh45@gmail.com",
+  "root":  "./output",
+  "host":  "Mahdiyars-MacBook-Pro-4.local",
+  "username":  "mahdiyarshahbazi",
+  "executable":  "/Users/mahdiyarshahbazi/miniconda3/envs/jacobian/bin/python",
+  "cpu_count":  14,
+  "cpu_count_logical":  14,
+  "disk":  {
+    "/":  {
+      "total":  "494384795648",
+      "used":  "404532613120"
+    }
+  },
+  "memory":  {
+    "total":  "51539607552"
+  },
+  "cpu":  {
+    "count":  14,
+    "countLogical":  14
+  },
+  "gpuapple":  {
+    "gpuType":  "Apple M4 Pro",
+    "vendor":  "sppci_vendor_Apple",
+    "cores":  20
+  }
+}
